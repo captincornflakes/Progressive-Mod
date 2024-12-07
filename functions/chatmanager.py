@@ -74,8 +74,8 @@ class WordFilter(commands.Cog):
                     "word": word,
                     "points_added": points,
                     "timestamp": datetime.now().isoformat(),
-                    "action_by_name": "bot",  # Note action taken by the bot
-                    "note": "Modded by Progressive Bot - Chat Infraction",  # Additional note
+                    "action_by_name": "Bot", 
+                    "note": f"Modded by Progressive Bot - Chat Infraction word: {word}", 
                }
                log_json.append(log_entry)
 
