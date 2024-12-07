@@ -1,0 +1,14 @@
+{
+    "token": "https://discord.com/developers/applications",
+    "application_id": 0,
+    "status":"loading",
+    "use_Git": true,
+    "repo_url": "https://github.com/captincornflakes/Disocrd-Bot-Template",
+    "repo_temp": "Disocrd-Bot-Template-main",
+    "database": {
+        "host": "127.0.0.1",
+        "user": "user",
+        "password": "password",
+        "database": "Database"
+    }
+}
