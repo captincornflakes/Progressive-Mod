@@ -2,165 +2,137 @@ import discord
 from discord.ext import commands, tasks
 import json
 from datetime import datetime
+import asyncio
+
 
 class PointDecay(commands.Cog):
      def __init__(self, bot):
           self.bot = bot
           self.conn = bot.db_connection
-          self.cursor = self.conn.cursor()
-          self.default_points = 0
-          self.point_decay_loop.start()  # Start the loop when the cog is loaded
+          self.point_decay_loop.start()
+
+     def cog_unload(self):
+          self.point_decay_loop.cancel()
 
      def reconnect_database(self):
-          """Reconnects to the database if needed."""
+          """Reconnect to the database if the connection is lost."""
           try:
                self.conn.ping(reconnect=True, attempts=3, delay=5)
           except Exception as e:
                print(f"Error reconnecting to the database: {e}")
-          try:
-               self.cursor.execute("SELECT 1")
-               result = self.cursor.fetchone()
-          except Exception as e:
-               print(f"Error: Database connection failed: {e}")
 
-     async def send_warning(self, user_id, guild_id, points, log_json):
-          """Send a warning message to a user based on their points."""
-          # Define the tiers and their respective messages
-          tiers = [
-               {
-                    "points": 300,
-                    "status": "flagged",
-                    "message": "You have incurred significant infractions. Please adhere to the rules to avoid further consequences."
-               },
-               {
-                    "points": 500,
-                    "status": "risking ban",
-                    "message": "Your infractions are severe. You are at risk of being banned if your points reach 1000."
-               },
-               {
-                    "points": 1000,
-                    "status": "banned",
-                    "message": "Due to repeated violations of the rules, you have been banned from the server."
-               },
-                    ]
-
-          user = await self.bot.fetch_user(user_id)
-          if user:
-               for tier in tiers:
-                    if points >= tier["points"]:
-                         # Check if the message for this tier has already been sent
-                         if "message_sent" not in log_json or log_json["message_sent"] != tier["status"]:
-                              # Format the infraction log nicely
-                              formatted_log = "\n".join(
-                              [f"• **Action**: {entry.get('action', 'N/A')} | **Word**: {entry.get('word', 'N/A')} | **Points Added**: {entry.get('points_added', 'N/A')} | **Time**: {entry.get('timestamp', 'N/A')}"
-                                   for entry in log_json.get("log_entries", [])]
-                              )
-                              message = (
-                              f"{tier['message']}\n\n**Current Points**: {points}\n\n"
-                              f"**Infraction Log:**\n{formatted_log or 'No infractions recorded.'}"
-                              )
-                              try:
-                                   # Send DM to the user
-                                   await user.send(message)
-                                   print(f"Sent warning to user {user_id} in guild {guild_id}: {message}")
-
-                                   # Update the log to mark this tier's message as sent
-                                   log_json["message_sent"] = tier["status"]
-
-                              except discord.errors.Forbidden:
-                                   print(f"Unable to send DM to user {user_id}. They may have DMs disabled.")
-
-                         # If points are 1000 or more, ban the user
-                         if points >= 1000:
-                              guild = self.bot.get_guild(guild_id)
-                              if guild:
-                                   member = guild.get_member(user_id)
-                              if member:
-                                   await member.ban(reason="Exceeded maximum infractions (1000 points).")
-                                   print(f"Banned user {user_id} in guild {guild_id} for reaching 1000 points.")
-                                   # Update the log to record the ban
-                                   log_json["ban_message"] = "User banned due to exceeding infraction points."
-
-                         break  # Stop checking further tiers once the applicable one is found
-
-          # Return the updated log_json for database updates
-          return log_json
-
-
-     @tasks.loop(hours=1)
+     @tasks.loop(hours=24)
      async def point_decay_loop(self):
-          """Loop that runs every hour on the hour and reduces points for all users by 10."""
-          
-          # Define the tiers and messages
-          tiers = [
-               {"points": 300, "status": "flagged", "message": "You have incurred significant infractions. You are at risk of being banned once you reach 1000 points."},
-               {"points": 500, "status": "risking ban", "message": "You have incurred significant infractions. You are at risk of being banned once you reach 1000 points."},
-               {"points": 1000, "status": "banned", "message": "Due to repeated violations of the rules, you have been banned from the server."}
-          ]
-          
+          """Loop to decrement user points over time."""
+          self.reconnect_database()
           try:
-               current_time = datetime.now().isoformat()
-               print(f"Point decay started at {current_time}")
+               with self.conn.cursor() as cursor:
+                    cursor.execute("SELECT user_id, guild_id, points, log_json FROM users")
+                    users = cursor.fetchall()
 
-               # Reconnect to the database before running the operation
-               self.reconnect_database()
+               for user in users:
+                    user_id, guild_id, points, log_json = user
 
-               # Fetch all users' current points
-               self.cursor.execute("SELECT guild_id, user_id, points, log_json, status FROM users")
-               users = self.cursor.fetchall()
+                    # Decode and validate log_json
+                    if isinstance(log_json, str):
+                         try:
+                              log_json = json.loads(log_json)
+                         except json.JSONDecodeError:
+                              print(f"Skipping user {user_id}: invalid JSON format in log_json.")
+                              log_json = {}
 
-               # Loop through all users and reduce their points by 10 if possible
-               for guild_id, user_id, current_points, log_json, status in users:
-                    new_points = max(0, current_points - 10)  # Ensure points don't go below 0
-                    if new_points != current_points:
-                         # Update the user's points in the database
-                         self.cursor.execute(
-                         "UPDATE users SET points = %s WHERE guild_id = %s AND user_id = %s",
-                         (new_points, guild_id, user_id)
-                         )
-                         print(f"Reduced points for user {user_id} in guild {guild_id}: {current_points} -> {new_points}")
+                    if not isinstance(log_json, dict):
+                         print(f"Skipping user {user_id}: log_json is not a dictionary.")
+                         continue
 
-                         # Load the log data if available
-                         log_json = json.loads(log_json) if log_json else {}
+                    # Decay points if they are above zero
+                    if points > 0:
+                         new_points = max(0, points - 10)
+                         log_entry = {
+                         "action": "point_decay",
+                         "points_removed": 10,
+                         "timestamp": datetime.now().isoformat(),
+                         }
 
-                         # Check for warning thresholds after updating points
-                         log_json = await self.send_warning(user_id, guild_id, new_points, log_json)
+                         # Add the log entry
+                         log_json.setdefault("log_entries", []).append(log_entry)
 
-                         # Update status based on points thresholds
-                         new_status = "active"  # Default status for users under 300 points
-                         for tier in tiers:
-                              if new_points >= tier["points"]:
-                                   new_status = tier["status"]
-
-                         # Update the status in the database if changed
-                         if new_status != status:
-                              self.cursor.execute(
-                                   "UPDATE users SET status = %s WHERE guild_id = %s AND user_id = %s",
-                                   (new_status, guild_id, user_id)
+                         # Update database
+                         with self.conn.cursor() as cursor:
+                              cursor.execute(
+                                   "UPDATE users SET points = %s, log_json = %s WHERE user_id = %s AND guild_id = %s",
+                                   (new_points, json.dumps(log_json), user_id, guild_id),
                               )
-                         print(f"Updated status for user {user_id} in guild {guild_id}: {status} -> {new_status}")
+                         self.conn.commit()
 
-                         # Update log_json in the database if modified
-                         self.cursor.execute(
-                         "UPDATE users SET log_json = %s WHERE guild_id = %s AND user_id = %s",
-                         (json.dumps(log_json), guild_id, user_id)
-                         )
-
-               # Commit changes
-               self.conn.commit()
+                         print(f"Applied point decay to user {user_id}. New points: {new_points}")
 
           except Exception as e:
                print(f"Error in point_decay_loop: {e}")
 
      @point_decay_loop.before_loop
      async def before_point_decay_loop(self):
-          """Ensure that the loop runs at the top of the hour."""
-          from datetime import datetime, timedelta
-          now = datetime.now()
-          # Calculate the time until the next hour
-          next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-          await discord.utils.sleep_until(next_hour)
-          print("Point decay loop will start now.")
+          """Ensure the bot is ready before starting the loop."""
+          await self.bot.wait_until_ready()
+
+     @commands.command(name="show_log", help="Show the log for a specific user.")
+     async def show_log(self, ctx, member: discord.Member):
+          """Display a user's log information."""
+          self.reconnect_database()
+          try:
+               with self.conn.cursor() as cursor:
+                    cursor.execute(
+                         "SELECT points, log_json FROM users WHERE user_id = %s AND guild_id = %s",
+                         (member.id, ctx.guild.id),
+                    )
+                    result = cursor.fetchone()
+
+               if not result:
+                    await ctx.send(f"No data found for {member.mention}.")
+                    return
+
+               points, log_json = result
+
+               # Decode log_json
+               if isinstance(log_json, str):
+                    try:
+                         log_json = json.loads(log_json)
+                    except json.JSONDecodeError:
+                         await ctx.send("Error decoding log JSON for this user.")
+                         return
+
+               if not isinstance(log_json, dict):
+                    await ctx.send("Invalid log data format for this user.")
+                    return
+
+               # Format log entries
+               log_entries = log_json.get("log_entries", [])
+               formatted_logs = "\n".join(
+                    [
+                         f"- **{entry.get('timestamp', 'Unknown')}**: {entry.get('action', 'Unknown action')} (Points removed: {entry.get('points_removed', 'N/A')})"
+                         for entry in log_entries
+                    ]
+               )
+
+               response = (
+                    f"**User:** {member.mention}\n"
+                    f"**Points:** {points}\n"
+                    f"**Log Entries:**\n{formatted_logs if log_entries else 'No log entries found.'}"
+               )
+
+               await ctx.send(response)
+
+          except Exception as e:
+               print(f"Error fetching log for {member.id}: {e}")
+               await ctx.send("An error occurred while retrieving the log.")
+
+     @commands.command(name="force_decay", help="Force the point decay loop to run.")
+     @commands.has_permissions(administrator=True)
+     async def force_decay(self, ctx):
+          """Force the point decay loop to run manually."""
+          await self.point_decay_loop()
+          await ctx.send("Point decay loop executed manually.")
+
 
 async def setup(bot):
      await bot.add_cog(PointDecay(bot))
