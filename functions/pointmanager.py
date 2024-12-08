@@ -25,47 +25,67 @@ class PointDecay(commands.Cog):
 
      async def send_warning(self, user_id, guild_id, points, log_json):
           """Send a warning message to a user based on their points."""
-          
-          # Define the tiers and messages
+          # Define the tiers and their respective messages
           tiers = [
-               {"points": 300, "status": "flagged", "message": "You have incurred significant infractions. You are at risk of being banned once you reach 1000 points."},
-               {"points": 500, "status": "risking ban", "message": "You have incurred significant infractions. You are at risk of being banned once you reach 1000 points."},
-               {"points": 1000, "status": "banned", "message": "Due to repeated violations of the rules, you have been banned from the server."}
-          ]
-          
+               {
+                    "points": 300,
+                    "status": "flagged",
+                    "message": "You have incurred significant infractions. Please adhere to the rules to avoid further consequences."
+               },
+               {
+                    "points": 500,
+                    "status": "risking ban",
+                    "message": "Your infractions are severe. You are at risk of being banned if your points reach 1000."
+               },
+               {
+                    "points": 1000,
+                    "status": "banned",
+                    "message": "Due to repeated violations of the rules, you have been banned from the server."
+               },
+                    ]
+
           user = await self.bot.fetch_user(user_id)
           if user:
                for tier in tiers:
                     if points >= tier["points"]:
-                         # Check if the message has already been sent for this tier
+                         # Check if the message for this tier has already been sent
                          if "message_sent" not in log_json or log_json["message_sent"] != tier["status"]:
-                              message = f"{tier['message']} Current points: {points}.\n\nInfraction Log:\n{json.dumps(log_json, indent=2)}"
+                              # Format the infraction log nicely
+                              formatted_log = "\n".join(
+                              [f"• **Action**: {entry.get('action', 'N/A')} | **Word**: {entry.get('word', 'N/A')} | **Points Added**: {entry.get('points_added', 'N/A')} | **Time**: {entry.get('timestamp', 'N/A')}"
+                                   for entry in log_json.get("log_entries", [])]
+                              )
+                              message = (
+                              f"{tier['message']}\n\n**Current Points**: {points}\n\n"
+                              f"**Infraction Log:**\n{formatted_log or 'No infractions recorded.'}"
+                              )
                               try:
+                                   # Send DM to the user
                                    await user.send(message)
-                                   print(f"Sent message to {user_id} in guild {guild_id}: {message}")
+                                   print(f"Sent warning to user {user_id} in guild {guild_id}: {message}")
 
-                                   # Add a note to log_json indicating the message has been sent
+                                   # Update the log to mark this tier's message as sent
                                    log_json["message_sent"] = tier["status"]
 
                               except discord.errors.Forbidden:
-                                   print(f"Could not send DM to user {user_id} in guild {guild_id}. They have DMs disabled.")
+                                   print(f"Unable to send DM to user {user_id}. They may have DMs disabled.")
 
                          # If points are 1000 or more, ban the user
                          if points >= 1000:
                               guild = self.bot.get_guild(guild_id)
                               if guild:
                                    member = guild.get_member(user_id)
-                                   if member:
-                                        await member.ban(reason="Exceeded maximum infractions (1000 points).")
-                                        print(f"Banned user {user_id} in guild {guild_id} due to exceeding infraction points.")
-                                        
-                                        # Add a note to log_json indicating the user has been banned
-                                        log_json["ban_message"] = "User banned due to exceeding infraction points."
+                              if member:
+                                   await member.ban(reason="Exceeded maximum infractions (1000 points).")
+                                   print(f"Banned user {user_id} in guild {guild_id} for reaching 1000 points.")
+                                   # Update the log to record the ban
+                                   log_json["ban_message"] = "User banned due to exceeding infraction points."
 
-                         break
+                         break  # Stop checking further tiers once the applicable one is found
 
-          # Update log_json in the database (if there are any changes)
+          # Return the updated log_json for database updates
           return log_json
+
 
      @tasks.loop(hours=1)
      async def point_decay_loop(self):
