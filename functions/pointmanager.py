@@ -76,7 +76,7 @@ class PointDecay(commands.Cog):
           # Update log_json in the database (if there are any changes)
           return log_json
 
-     @tasks.loop(hours=1)
+     @tasks.loop(minutes=15)
      async def point_decay_loop(self):
           """Loop that runs every hour on the hour and reduces points for all users by 10."""
           
@@ -120,8 +120,6 @@ class PointDecay(commands.Cog):
                          for tier in tiers:
                               if new_points >= tier["points"]:
                                    new_status = tier["status"]
-
-                         # Update the status in the database if changed
                          if new_status != status:
                               self.cursor.execute(
                                    "UPDATE users SET status = %s WHERE guild_id = %s AND user_id = %s",
@@ -147,8 +145,8 @@ class PointDecay(commands.Cog):
           from datetime import datetime, timedelta
           now = datetime.now()
           # Calculate the time until the next hour
-          next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-          await discord.utils.sleep_until(next_hour)
+          next_quarter = now + timedelta(minutes=15 - now.minute % 15, seconds=-now.second, microseconds=-now.microsecond)
+          await discord.utils.sleep_until(next_quarter)
           print("Point decay loop will start now.")
 
 async def setup(bot):
